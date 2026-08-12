@@ -1,22 +1,20 @@
-# tools.py
-# ============================================================
-# WRITING TOOLS
-# ============================================================
-# Each tool has:
-#   - A name and description (shown in UI)
-#   - A system prompt (tells the AI what role to play)
-#   - A temperature (how creative to be)
-#   - A function that builds the user prompt and calls the engine
-# ============================================================
+"""Writing tools.
+
+Each tool pairs a system prompt (the role the model plays) with a
+temperature and a prompt builder that shapes the user's input.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
 
 from engine import generate, stream
 
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
 
-# ============================================================
-# TOOL DEFINITIONS
-# ============================================================
-
-TOOLS = {
+TOOLS: dict[str, dict] = {
     "write": {
         "name": "Write",
         "icon": "✍️",
@@ -24,24 +22,22 @@ TOOLS = {
         "temperature": 0.7,
         "system_prompt": (
             "You are a professional writer. You create clear, engaging, "
-            "well-structured content. You write with a natural, human voice. "
-            "Use proper formatting with headings, paragraphs, and bullet points "
-            "where appropriate. Never start with 'Sure!' or 'Here is' — "
-            "just write the content directly."
+            "well-structured content with a natural, human voice. Use "
+            "headings, paragraphs and bullet points where they help. "
+            "Never open with 'Sure!' or 'Here is' — write the content "
+            "directly."
         ),
     },
     "improve": {
         "name": "Improve",
         "icon": "⬆️",
-        "description": "Enhance existing text — better word choice, flow, clarity",
+        "description": "Sharpen word choice, flow and clarity",
         "temperature": 0.3,
         "system_prompt": (
-            "You are an expert editor. Given text to improve, you enhance it by: "
-            "1) Replacing weak words with stronger ones, "
-            "2) Improving sentence flow and transitions, "
-            "3) Making the meaning clearer, "
-            "4) Keeping the original voice and intent. "
-            "Return ONLY the improved text. Do not explain what you changed."
+            "You are an expert editor. Improve the given text by replacing "
+            "weak words with stronger ones, smoothing sentence flow and "
+            "transitions, and clarifying meaning — while keeping the "
+            "original voice and intent. Return ONLY the improved text."
         ),
     },
     "rewrite": {
@@ -50,96 +46,90 @@ TOOLS = {
         "description": "Same meaning, completely different words",
         "temperature": 0.5,
         "system_prompt": (
-            "You are a rewriting specialist. Given text, you rewrite it completely "
-            "while preserving the exact same meaning and information. Use different "
-            "sentence structures, different vocabulary, and a fresh perspective. "
-            "Return ONLY the rewritten text. Do not explain what you changed."
+            "You are a rewriting specialist. Rewrite the given text "
+            "completely while preserving its exact meaning and "
+            "information. Use different sentence structures and "
+            "vocabulary. Return ONLY the rewritten text."
         ),
     },
     "tone": {
         "name": "Change Tone",
         "icon": "🎭",
-        "description": "Rewrite text in a different tone or style",
+        "description": "Recast text in a different tone or style",
         "temperature": 0.4,
         "system_prompt": (
-            "You are a tone adaptation expert. Given text and a target tone, "
-            "you rewrite the text to match that tone while keeping the same "
-            "information and meaning. Adapt vocabulary, sentence structure, "
-            "and style to match the requested tone. "
+            "You are a tone adaptation expert. Rewrite the given text to "
+            "match the requested tone while keeping the same information "
+            "and meaning. Adapt vocabulary, sentence structure and style. "
             "Return ONLY the rewritten text."
         ),
     },
     "grammar": {
         "name": "Grammar Fix",
         "icon": "✅",
-        "description": "Fix grammar, spelling, and punctuation errors",
+        "description": "Correct grammar, spelling and punctuation",
         "temperature": 0.1,
         "system_prompt": (
-            "You are a grammar and proofreading expert. Fix all grammar errors, "
-            "spelling mistakes, punctuation issues, and awkward phrasing. "
-            "Keep the original style and voice. Make minimal changes — "
-            "only fix what is actually wrong. "
-            "Return ONLY the corrected text. Do not list the errors."
+            "You are a proofreading expert. Fix grammar, spelling, "
+            "punctuation and awkward phrasing. Keep the original style "
+            "and voice, and make minimal changes — only fix what is "
+            "actually wrong. Return ONLY the corrected text."
         ),
     },
     "expand": {
         "name": "Expand",
         "icon": "📐",
-        "description": "Turn short text into longer, detailed content",
+        "description": "Turn short notes into detailed content",
         "temperature": 0.6,
         "system_prompt": (
-            "You are a content expansion specialist. Given short text or "
-            "bullet points, you expand it into full, detailed content. "
-            "Add supporting details, examples, explanations, and context. "
-            "Maintain the original voice and intent. "
-            "Return ONLY the expanded text."
+            "You are a content expansion specialist. Expand short text or "
+            "bullet points into full, detailed content with supporting "
+            "details, examples, explanations and context. Maintain the "
+            "original voice. Return ONLY the expanded text."
         ),
     },
     "shorten": {
         "name": "Shorten",
         "icon": "✂️",
-        "description": "Condense long text while keeping key points",
+        "description": "Condense text while keeping every key point",
         "temperature": 0.3,
         "system_prompt": (
-            "You are a conciseness expert. Given long text, you condense it "
-            "while keeping all key information and main points. Remove "
-            "redundancy, tighten sentences, and eliminate fluff. "
-            "The result should be clear and to the point. "
-            "Return ONLY the shortened text."
+            "You are a conciseness expert. Condense the given text while "
+            "keeping all key information. Remove redundancy, tighten "
+            "sentences and cut fluff. Return ONLY the shortened text."
         ),
     },
     "translate": {
         "name": "Translate",
         "icon": "🌐",
-        "description": "Translate text to another language",
+        "description": "Translate text into another language",
         "temperature": 0.2,
         "system_prompt": (
             "You are a professional translator. Translate the given text "
-            "to the target language accurately and naturally. Preserve "
-            "the tone, style, and meaning. Use natural phrasing in the "
-            "target language — not word-for-word translation. "
-            "Return ONLY the translated text."
+            "accurately and naturally, preserving tone, style and "
+            "meaning. Use natural phrasing in the target language rather "
+            "than word-for-word translation. Return ONLY the translation."
         ),
     },
     "summarize": {
         "name": "Summarize",
         "icon": "📝",
-        "description": "Extract key points into a summary",
+        "description": "Pull the key points into a summary",
         "temperature": 0.2,
         "system_prompt": (
-            "You are a summarization expert. Given long text, you extract "
-            "the key points and create a clear, concise summary. "
-            "Capture the main ideas, important facts, and conclusions. "
+            "You are a summarization expert. Extract the key points of "
+            "the given text into a clear, concise summary that captures "
+            "the main ideas, important facts and conclusions. "
             "Return ONLY the summary."
         ),
     },
 }
 
-# ============================================================
-# AVAILABLE TONES
-# ============================================================
+# ---------------------------------------------------------------------------
+# Option lists
+# ---------------------------------------------------------------------------
 
-TONES = [
+TONES: list[str] = [
     "Professional",
     "Casual",
     "Academic",
@@ -153,152 +143,157 @@ TONES = [
     "Simple / Plain English",
 ]
 
-# ============================================================
-# AVAILABLE LANGUAGES
-# ============================================================
-
-LANGUAGES = [
+LANGUAGES: list[str] = [
     "English", "Spanish", "French", "German", "Italian",
     "Portuguese", "Chinese", "Japanese", "Korean", "Arabic",
-    "Hindi", "Russian", "Turkish", "Dutch", "Swedish",
-    "Urdu",
+    "Hindi", "Russian", "Turkish", "Dutch", "Swedish", "Urdu",
 ]
 
-# ============================================================
-# TOOL FUNCTIONS
-# ============================================================
+LENGTHS: list[str] = [
+    "Short (300-500 words)",
+    "Medium (800-1200 words)",
+    "Long (1500-2500 words)",
+]
 
-def run_tool(tool_id, input_text, extra_params=None):
+
+# ---------------------------------------------------------------------------
+# Prompt builders
+# ---------------------------------------------------------------------------
+
+
+def _prompt_write(text: str, params: dict) -> str:
+    return (
+        f"Write about the following topic:\n\n{text}\n\n"
+        f"Tone: {params.get('tone', 'Professional')}\n"
+        f"Length: {params.get('length', LENGTHS[1])}\n"
+        f"Target audience: {params.get('audience') or 'General'}\n"
+    )
+
+
+def _prompt_improve(text: str, _params: dict) -> str:
+    return f"Improve the following text:\n\n{text}"
+
+
+def _prompt_rewrite(text: str, params: dict) -> str:
+    tone = params.get("tone", "")
+    if tone and tone != "Keep original tone":
+        return (
+            f"Rewrite the following text, adapting it to a {tone} "
+            f"tone:\n\n{text}"
+        )
+    return f"Rewrite the following text:\n\n{text}"
+
+
+def _prompt_tone(text: str, params: dict) -> str:
+    tone = params.get("tone", "Professional")
+    return f"Change the tone of the following text to {tone}:\n\n{text}"
+
+
+def _prompt_grammar(text: str, _params: dict) -> str:
+    return f"Fix all grammar and spelling errors:\n\n{text}"
+
+
+def _prompt_expand(text: str, params: dict) -> str:
+    factor = params.get("factor", "2x")
+    return (
+        f"Expand the following text to about {factor} its current length. "
+        f"Add details, examples and explanations:\n\n{text}"
+    )
+
+
+def _prompt_shorten(text: str, params: dict) -> str:
+    target = params.get("target", "50%")
+    return (
+        f"Shorten the following text to about {target} of its current "
+        f"length, keeping all key points:\n\n{text}"
+    )
+
+
+def _prompt_translate(text: str, params: dict) -> str:
+    language = params.get("language", "Spanish")
+    return f"Translate the following text to {language}:\n\n{text}"
+
+
+def _prompt_summarize(text: str, params: dict) -> str:
+    style = params.get("format", "Paragraph")
+    return f"Summarize the following text as {style}:\n\n{text}"
+
+
+PROMPT_BUILDERS = {
+    "write": _prompt_write,
+    "improve": _prompt_improve,
+    "rewrite": _prompt_rewrite,
+    "tone": _prompt_tone,
+    "grammar": _prompt_grammar,
+    "expand": _prompt_expand,
+    "shorten": _prompt_shorten,
+    "translate": _prompt_translate,
+    "summarize": _prompt_summarize,
+}
+
+
+def build_prompt(tool_id: str, input_text: str,
+                 extra_params: dict | None = None) -> str:
+    """Shape the user's input into the prompt for ``tool_id``.
+
+    When ``extra_params['raw']`` is true the text is passed through
+    untouched.  Templates rely on this: they already produce a fully
+    formed instruction, and wrapping it in the tool's own scaffolding
+    would nest one prompt inside another.
     """
-    Runs a writing tool and returns the complete result.
+    params = extra_params or {}
 
-    Args:
-        tool_id: key from TOOLS dict (e.g., "write", "improve")
-        input_text: the user's input text
-        extra_params: optional dict with tone, language, length, etc.
+    if params.get("raw"):
+        return input_text
 
-    Returns:
-        str: the AI's response
-    """
+    builder = PROMPT_BUILDERS.get(tool_id)
+    if builder is None:
+        return input_text
+    return builder(input_text, params)
+
+
+# ---------------------------------------------------------------------------
+# Runners
+# ---------------------------------------------------------------------------
+
+
+def run_tool(tool_id: str, input_text: str,
+             extra_params: dict | None = None) -> str:
+    """Run a tool and return the complete result."""
     tool = TOOLS[tool_id]
-    user_prompt = _build_prompt(tool_id, input_text, extra_params)
-
     return generate(
         system_prompt=tool["system_prompt"],
-        user_prompt=user_prompt,
+        user_prompt=build_prompt(tool_id, input_text, extra_params),
         temperature=tool["temperature"],
     )
 
 
-def run_tool_stream(tool_id, input_text, extra_params=None):
-    """
-    Runs a writing tool with streaming output.
-
-    Args:
-        tool_id: key from TOOLS dict
-        input_text: the user's input text
-        extra_params: optional dict with tone, language, length, etc.
-
-    Yields:
-        str: text chunks as they arrive
-    """
+def run_tool_stream(tool_id: str, input_text: str,
+                    extra_params: dict | None = None) -> Iterator[str]:
+    """Run a tool and yield result chunks as they arrive."""
     tool = TOOLS[tool_id]
-    user_prompt = _build_prompt(tool_id, input_text, extra_params)
-
-    for chunk in stream(
+    yield from stream(
         system_prompt=tool["system_prompt"],
-        user_prompt=user_prompt,
+        user_prompt=build_prompt(tool_id, input_text, extra_params),
         temperature=tool["temperature"],
-    ):
-        yield chunk
+    )
 
 
-def _build_prompt(tool_id, input_text, extra_params=None):
-    """
-    Builds the user prompt based on the tool type.
-    Each tool needs slightly different input formatting.
-    """
-    if extra_params is None:
-        extra_params = {}
-
-    if tool_id == "write":
-        topic = input_text
-        tone = extra_params.get("tone", "Professional")
-        length = extra_params.get("length", "Medium")
-        audience = extra_params.get("audience", "General")
-
-        prompt = (
-            f"Write about the following topic:\n\n{topic}\n\n"
-            f"Tone: {tone}\n"
-            f"Length: {length}\n"
-            f"Target audience: {audience}\n"
-        )
-        return prompt
-
-    elif tool_id == "improve":
-        return f"Improve the following text:\n\n{input_text}"
-
-    elif tool_id == "rewrite":
-        tone = extra_params.get("tone", "")
-        if tone:
-            return (
-                f"Rewrite the following text. "
-                f"Optionally adapt to a {tone} tone:\n\n{input_text}"
-            )
-        return f"Rewrite the following text:\n\n{input_text}"
-
-    elif tool_id == "tone":
-        target_tone = extra_params.get("tone", "Professional")
-        return (
-            f"Change the tone of the following text to {target_tone}:\n\n"
-            f"{input_text}"
-        )
-
-    elif tool_id == "grammar":
-        return f"Fix all grammar and spelling errors:\n\n{input_text}"
-
-    elif tool_id == "expand":
-        factor = extra_params.get("factor", "2x")
-        return (
-            f"Expand the following text to about {factor} its current length. "
-            f"Add details, examples, and explanations:\n\n{input_text}"
-        )
-
-    elif tool_id == "shorten":
-        target = extra_params.get("target", "50%")
-        return (
-            f"Shorten the following text to about {target} of its current length. "
-            f"Keep all key points:\n\n{input_text}"
-        )
-
-    elif tool_id == "translate":
-        language = extra_params.get("language", "Spanish")
-        return (
-            f"Translate the following text to {language}:\n\n{input_text}"
-        )
-
-    elif tool_id == "summarize":
-        format_type = extra_params.get("format", "Paragraph")
-        return (
-            f"Summarize the following text as {format_type}:\n\n{input_text}"
-        )
-
-    else:
-        return input_text
-
-
-# ============================================================
-# TEST
-# ============================================================
+# ---------------------------------------------------------------------------
+# Manual smoke test:  python tools.py
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     print("Available tools:\n")
-    for key, tool in TOOLS.items():
-        print(f"  {tool['icon']} {tool['name']:15s} | temp={tool['temperature']} | {tool['description']}")
+    for entry in TOOLS.values():
+        print(
+            f"  {entry['icon']} {entry['name']:14s} "
+            f"temp={entry['temperature']}  {entry['description']}"
+        )
 
-    print(f"\nTesting 'grammar' tool...\n")
-    result = run_tool(
+    print("\nTesting the grammar tool...\n")
+    print(run_tool(
         "grammar",
-        "Their going to the store to buy they're groceries and its going to be a long day for theyre family.",
-    )
-    print(f"Result: {result}")
+        "Their going to the store to buy they're groceries and its "
+        "going to be a long day for theyre family.",
+    ))

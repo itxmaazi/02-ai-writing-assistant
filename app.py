@@ -1,25 +1,30 @@
-# app.py
-# ============================================================
-# BEACON WRITER — AI Writing Assistant
-# ============================================================
-# Run with: streamlit run app.py
-#
-# A full-featured AI writing assistant built with Streamlit.
-# Uses Gemini (primary) + Groq (fallback) for AI generation.
-# ============================================================
+"""Beacon Writer — an AI writing assistant built on Streamlit.
 
-import streamlit as st
+Run with:  streamlit run app.py
+"""
+
+from __future__ import annotations
+
+import html
+import os
 import time
 from datetime import datetime
 
-from tools import TOOLS, TONES, LANGUAGES, run_tool_stream
+import streamlit as st
+
+from config_paths import STYLESHEET
+from engine import EngineError, provider_status
 from templates_data import TEMPLATES
-from utils import text_stats, save_document, load_documents, delete_document, export_markdown, export_text
-
-
-# ============================================================
-# PAGE CONFIG
-# ============================================================
+from tools import LANGUAGES, LENGTHS, TONES, TOOLS, run_tool_stream
+from utils import (
+    delete_document,
+    export_markdown,
+    export_text,
+    load_documents,
+    safe_filename,
+    save_document,
+    text_stats,
+)
 
 st.set_page_config(
     page_title="Beacon Writer",
@@ -28,555 +33,516 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ============================================================
-# CUSTOM CSS
-# ============================================================
 
-st.markdown("""
-<style>
-    /* Hide default Streamlit elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    header {visibility: hidden;}
-
-    /* Main background */
-    .stApp {
-        background-color: #0a0a0f;
-    }
-
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background-color: #12121a;
-        border-right: 1px solid #1e1e2e;
-    }
-
-    [data-testid="stSidebar"] .stMarkdown p,
-    [data-testid="stSidebar"] .stMarkdown li,
-    [data-testid="stSidebar"] label {
-        color: #a1a1aa;
-    }
-
-    /* Text areas */
-    .stTextArea textarea {
-        background-color: #12121a !important;
-        border: 1px solid #1e1e2e !important;
-        color: #e4e4e7 !important;
-        border-radius: 10px !important;
-        font-size: 15px !important;
-    }
-
-    .stTextArea textarea:focus {
-        border-color: #6c63ff !important;
-        box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.15) !important;
-    }
-
-    /* Text input */
-    .stTextInput input {
-        background-color: #12121a !important;
-        border: 1px solid #1e1e2e !important;
-        color: #e4e4e7 !important;
-        border-radius: 8px !important;
-    }
-
-    /* Select boxes */
-    .stSelectbox > div > div {
-        background-color: #12121a !important;
-        border: 1px solid #1e1e2e !important;
-        color: #e4e4e7 !important;
-        border-radius: 8px !important;
-    }
-
-    /* Buttons */
-    .stButton > button {
-        background-color: #6c63ff !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-        padding: 8px 24px !important;
-        font-weight: 600 !important;
-        transition: all 0.15s ease !important;
-    }
-
-    .stButton > button:hover {
-        background-color: #5b54e6 !important;
-        transform: translateY(-1px) !important;
-    }
-
-    /* Download button */
-    .stDownloadButton > button {
-        background-color: #1e1e2e !important;
-        color: #a1a1aa !important;
-        border: 1px solid #2e2e3e !important;
-        border-radius: 8px !important;
-    }
-
-    .stDownloadButton > button:hover {
-        border-color: #6c63ff !important;
-        color: #e4e4e7 !important;
-    }
-
-    /* Metrics */
-    [data-testid="stMetricValue"] {
-        color: #6c63ff !important;
-        font-family: 'JetBrains Mono', monospace !important;
-    }
-
-    [data-testid="stMetricLabel"] {
-        color: #71717a !important;
-    }
-
-    /* Expander */
-    .streamlit-expanderHeader {
-        background-color: #12121a !important;
-        border: 1px solid #1e1e2e !important;
-        border-radius: 8px !important;
-        color: #e4e4e7 !important;
-    }
-
-    /* Dividers */
-    hr {
-        border-color: #1e1e2e !important;
-    }
-
-    /* Success/Info boxes */
-    .stAlert {
-        background-color: #12121a !important;
-        border-radius: 8px !important;
-    }
-
-    /* Radio buttons */
-    .stRadio > div {
-        gap: 4px;
-    }
-
-    .stRadio > div > label {
-        background-color: #12121a;
-        border: 1px solid #1e1e2e;
-        border-radius: 6px;
-        padding: 6px 12px;
-        margin: 2px 0;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+# Styling
+# ---------------------------------------------------------------------------
 
 
-# ============================================================
-# SESSION STATE
-# ============================================================
-
-if "current_tool" not in st.session_state:
-    st.session_state.current_tool = "write"
-
-if "output_text" not in st.session_state:
-    st.session_state.output_text = ""
-
-if "input_text" not in st.session_state:
-    st.session_state.input_text = ""
-
-if "is_generating" not in st.session_state:
-    st.session_state.is_generating = False
+@st.cache_data(show_spinner=False)
+def _read_stylesheet(path: str, mtime: float) -> str:
+    """Read the stylesheet, re-reading whenever its mtime changes."""
+    del mtime  # only present so the cache invalidates on edit
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
 
 
-# ============================================================
-# SIDEBAR
-# ============================================================
+def load_css() -> None:
+    """Inject assets/style.css into the page."""
+    try:
+        css = _read_stylesheet(STYLESHEET, os.path.getmtime(STYLESHEET))
+    except OSError:
+        return
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
-with st.sidebar:
-    st.markdown("# ✍️ Beacon Writer")
-    st.markdown("*AI-Powered Writing Assistant*")
-    st.divider()
 
-    # ── Tools Section ──
-    st.markdown("### 🛠️ Tools")
+# ---------------------------------------------------------------------------
+# Session state
+# ---------------------------------------------------------------------------
 
-    for tool_id, tool in TOOLS.items():
-        if st.button(
-            f"{tool['icon']}  {tool['name']}",
-            key=f"tool_{tool_id}",
-            use_container_width=True,
-            type="secondary" if st.session_state.current_tool != tool_id else "primary",
-        ):
-            st.session_state.current_tool = tool_id
-            st.session_state.output_text = ""
-            st.rerun()
+DEFAULT_STATE = {
+    "view": "tool",
+    "tool_id": "write",
+    "template_id": "blog_post",
+    "output": "",
+    "output_title": "",
+    "output_meta": "",
+    "show_source": False,
+    "clear_inputs": False,
+}
 
-    st.divider()
+INPUT_PREFIXES = ("in_", "tf_")
 
-    # ── Templates Section ──
-    st.markdown("### 📋 Templates")
 
-    for tmpl_id, tmpl in TEMPLATES.items():
-        if st.button(
-            f"{tmpl['icon']}  {tmpl['name']}",
-            key=f"tmpl_{tmpl_id}",
-            use_container_width=True,
-        ):
-            st.session_state.current_tool = "template"
-            st.session_state.current_template = tmpl_id
-            st.session_state.output_text = ""
-            st.rerun()
+def init_state() -> None:
+    """Seed session state and honour a pending clear request."""
+    for key, value in DEFAULT_STATE.items():
+        st.session_state.setdefault(key, value)
 
-    st.divider()
+    # Widget values must be removed *before* the widgets are created;
+    # once a keyed widget exists, Streamlit ignores its `value=` argument.
+    if st.session_state.clear_inputs:
+        for key in list(st.session_state.keys()):
+            if key.startswith(INPUT_PREFIXES):
+                del st.session_state[key]
+        st.session_state.clear_inputs = False
 
-    # ── Saved Documents ──
-    st.markdown("### 📁 Saved Documents")
 
+def reset_output() -> None:
+    """Drop the current result."""
+    st.session_state.output = ""
+    st.session_state.output_title = ""
+    st.session_state.output_meta = ""
+    st.session_state.show_source = False
+
+
+def select_tool(tool_id: str) -> None:
+    """Switch the workspace to a tool."""
+    st.session_state.view = "tool"
+    st.session_state.tool_id = tool_id
+    reset_output()
+
+
+def select_template(template_id: str) -> None:
+    """Switch the workspace to a template."""
+    st.session_state.view = "template"
+    st.session_state.template_id = template_id
+    reset_output()
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+
+
+def render_brand() -> None:
+    """Render the sidebar wordmark."""
+    st.markdown(
+        '<div class="bw-brand">'
+        '<div class="bw-brand__mark">✍️</div>'
+        '<div><div class="bw-brand__name">Beacon Writer</div>'
+        '<div class="bw-brand__tag">AI writing assistant</div></div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def section_label(text: str) -> None:
+    """Render a small uppercase section heading."""
+    st.markdown(
+        f'<div class="bw-section-label">{html.escape(text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_provider_status() -> None:
+    """Show which AI providers are configured."""
+    pills = []
+    for provider in provider_status():
+        state = "on" if provider["ready"] else "off"
+        pills.append(
+            f'<span class="bw-pill bw-pill--{state}">'
+            f'<span class="bw-pill__dot"></span>'
+            f'{html.escape(provider["name"])}</span>'
+        )
+    st.markdown(
+        f'<div class="bw-status">{"".join(pills)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_library() -> None:
+    """List saved documents with load and delete controls."""
     docs = load_documents()
-    if docs:
-        for doc in reversed(docs[-10:]):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                if st.button(
-                    f"📄 {doc['title'][:25]}",
-                    key=f"doc_{doc['id']}",
-                    use_container_width=True,
-                ):
-                    st.session_state.output_text = doc["content"]
-                    st.session_state.input_text = ""
-                    st.session_state.current_tool = "write"
-                    st.rerun()
-            with col2:
-                if st.button("🗑️", key=f"del_{doc['id']}"):
-                    delete_document(doc["id"])
-                    st.rerun()
-    else:
-        st.caption("No saved documents yet.")
+    if not docs:
+        st.caption("Nothing saved yet.")
+        return
 
-
-# ============================================================
-# MAIN WORKSPACE
-# ============================================================
-
-# ── Header ──
-current = st.session_state.current_tool
-
-if current == "template":
-    tmpl = TEMPLATES[st.session_state.get("current_template", "blog_post")]
-    st.markdown(f"## {tmpl['icon']} {tmpl['name']}")
-    st.caption(tmpl["description"])
-elif current in TOOLS:
-    tool = TOOLS[current]
-    st.markdown(f"## {tool['icon']} {tool['name']}")
-    st.caption(tool["description"])
-else:
-    st.markdown("## ✍️ Beacon Writer")
-
-# Stats bar for output
-if st.session_state.output_text:
-    stats = text_stats(st.session_state.output_text)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Words", stats["words"])
-    col2.metric("Characters", stats["characters"])
-    col3.metric("Sentences", stats["sentences"])
-    col4.metric("Reading Time", stats["reading_time"])
-
-st.divider()
-
-
-# ============================================================
-# TOOL-SPECIFIC INPUTS
-# ============================================================
-
-extra_params = {}
-
-if current == "template":
-    # ── Template Mode ──
-    tmpl = TEMPLATES[st.session_state.get("current_template", "blog_post")]
-    fields = tmpl["fields"]
-
-    field_values = {}
-    cols = st.columns(2)
-
-    for i, field in enumerate(fields):
-        with cols[i % 2]:
-            if field["type"] == "text":
-                field_values[field["name"]] = st.text_input(
-                    field["label"],
-                    placeholder=field.get("placeholder", ""),
-                    key=f"tmpl_field_{field['name']}",
+    for doc in reversed(docs[-10:]):
+        col_open, col_delete = st.columns([5, 1], gap="small")
+        with col_open:
+            if st.button(
+                f"📄  {doc.get('title', 'Untitled')[:24]}",
+                key=f"open_{doc['id']}",
+                use_container_width=True,
+            ):
+                st.session_state.output = doc.get("content", "")
+                st.session_state.output_title = doc.get("title", "Document")
+                st.session_state.output_meta = (
+                    f"Saved {doc.get('created', '')}"
                 )
-            elif field["type"] == "textarea":
-                field_values[field["name"]] = st.text_area(
+                st.session_state.show_source = False
+                st.rerun()
+        with col_delete:
+            if st.button("✕", key=f"del_{doc['id']}",
+                         help="Delete this document"):
+                delete_document(doc["id"])
+                st.rerun()
+
+
+def render_sidebar() -> None:
+    """Render the whole sidebar."""
+    with st.sidebar:
+        render_brand()
+
+        section_label("Tools")
+        for tool_id, tool in TOOLS.items():
+            active = (st.session_state.view == "tool"
+                      and st.session_state.tool_id == tool_id)
+            st.button(
+                f"{tool['icon']}  {tool['name']}",
+                key=f"nav_tool_{tool_id}",
+                use_container_width=True,
+                type="primary" if active else "secondary",
+                on_click=select_tool,
+                args=(tool_id,),
+            )
+
+        section_label("Templates")
+        for template_id, template in TEMPLATES.items():
+            active = (st.session_state.view == "template"
+                      and st.session_state.template_id == template_id)
+            st.button(
+                f"{template['icon']}  {template['name']}",
+                key=f"nav_tmpl_{template_id}",
+                use_container_width=True,
+                type="primary" if active else "secondary",
+                on_click=select_template,
+                args=(template_id,),
+            )
+
+        section_label("Library")
+        render_library()
+
+        st.divider()
+        section_label("Providers")
+        render_provider_status()
+
+
+# ---------------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------------
+
+
+def current_subject() -> dict:
+    """Return the tool or template currently selected."""
+    if st.session_state.view == "template":
+        return TEMPLATES.get(st.session_state.template_id, {})
+    return TOOLS.get(st.session_state.tool_id, {})
+
+
+def render_header() -> None:
+    """Render the page title block."""
+    subject = current_subject()
+    st.markdown(
+        '<div class="bw-header">'
+        f'<div class="bw-header__icon">{subject.get("icon", "✍️")}</div>'
+        "<div>"
+        f'<h1 class="bw-header__title">'
+        f'{html.escape(subject.get("name", "Writer"))}</h1>'
+        f'<p class="bw-header__desc">'
+        f'{html.escape(subject.get("description", ""))}</p>'
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Input area
+# ---------------------------------------------------------------------------
+
+
+def render_template_inputs(template: dict) -> dict:
+    """Render a template's fields and return the entered values."""
+    values = {}
+    columns = st.columns(2, gap="medium")
+    template_id = st.session_state.template_id
+
+    for index, field in enumerate(template.get("fields", [])):
+        key = f"tf_{template_id}_{field['name']}"
+        with columns[index % 2]:
+            if field["type"] == "textarea":
+                values[field["name"]] = st.text_area(
                     field["label"],
                     placeholder=field.get("placeholder", ""),
-                    height=80,
-                    key=f"tmpl_field_{field['name']}",
+                    height=90,
+                    key=key,
                 )
             elif field["type"] == "select":
-                default_idx = 0
-                if "default" in field:
-                    default_idx = field["options"].index(field["default"]) if field["default"] in field["options"] else 0
-                field_values[field["name"]] = st.selectbox(
+                options = field.get("options", [])
+                default = field.get("default")
+                index_of = options.index(default) if default in options else 0
+                values[field["name"]] = st.selectbox(
                     field["label"],
-                    options=field["options"],
-                    index=default_idx,
-                    key=f"tmpl_field_{field['name']}",
+                    options=options,
+                    index=index_of,
+                    key=key,
                 )
+            else:
+                values[field["name"]] = st.text_input(
+                    field["label"],
+                    placeholder=field.get("placeholder", ""),
+                    key=key,
+                )
+    return values
 
-    extra_params["template"] = tmpl
-    extra_params["fields"] = field_values
 
-    # No manual input needed — template builds the prompt
-    st.session_state.input_text = ""
+def render_tool_inputs(tool_id: str) -> tuple:
+    """Render a tool's inputs and return ``(text, extra_params)``."""
+    params: dict = {}
 
-elif current == "write":
-    # ── Write Tool ──
-    st.session_state.input_text = st.text_area(
-        "What do you want to write about?",
-        value=st.session_state.input_text,
-        placeholder="e.g., A blog post about the future of remote work...",
-        height=120,
-        key="write_input",
+    prompts = {
+        "write": ("What do you want to write about?",
+                  "Describe your topic or idea…", 130),
+        "tone": ("Your text", "Paste the text to re-tone…", 170),
+        "translate": ("Your text", "Paste the text to translate…", 170),
+        "expand": ("Your text", "Paste short text or bullet points…", 170),
+        "shorten": ("Your text", "Paste the long text to condense…", 170),
+        "summarize": ("Your text", "Paste the text to summarise…", 170),
+        "rewrite": ("Your text", "Paste the text to rewrite…", 170),
+    }
+    label, placeholder, height = prompts.get(
+        tool_id, ("Your text", "Paste the text to work on…", 170)
     )
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        extra_params["tone"] = st.selectbox("Tone", TONES, index=0)
-    with col2:
-        extra_params["length"] = st.selectbox("Length", [
-            "Short (300-500 words)", "Medium (800-1200 words)", "Long (1500-2500 words)"
-        ], index=1)
-    with col3:
-        extra_params["audience"] = st.text_input("Audience", placeholder="e.g., General, Developers, Managers")
-
-elif current == "tone":
-    st.session_state.input_text = st.text_area(
-        "Paste your text here:",
-        value=st.session_state.input_text,
-        placeholder="Paste the text you want to change the tone of...",
-        height=150,
-        key="tone_input",
-    )
-    extra_params["tone"] = st.selectbox("Target Tone", TONES, index=0)
-
-elif current == "translate":
-    st.session_state.input_text = st.text_area(
-        "Paste your text here:",
-        value=st.session_state.input_text,
-        placeholder="Paste the text you want to translate...",
-        height=150,
-        key="translate_input",
-    )
-    extra_params["language"] = st.selectbox("Translate to", LANGUAGES, index=1)
-
-elif current == "expand":
-    st.session_state.input_text = st.text_area(
-        "Paste your text here:",
-        value=st.session_state.input_text,
-        placeholder="Paste short text or bullet points to expand...",
-        height=150,
-        key="expand_input",
-    )
-    extra_params["factor"] = st.selectbox("How much to expand", ["2x", "3x", "5x"], index=0)
-
-elif current == "shorten":
-    st.session_state.input_text = st.text_area(
-        "Paste your text here:",
-        value=st.session_state.input_text,
-        placeholder="Paste long text to condense...",
-        height=150,
-        key="shorten_input",
-    )
-    extra_params["target"] = st.selectbox("Target length", [
-        "25%", "50%", "75%"
-    ], index=1)
-
-elif current == "summarize":
-    st.session_state.input_text = st.text_area(
-        "Paste your text here:",
-        value=st.session_state.input_text,
-        placeholder="Paste long text to summarize...",
-        height=150,
-        key="summarize_input",
-    )
-    extra_params["format"] = st.selectbox("Summary format", [
-        "Paragraph", "Bullet Points", "TL;DR (1-2 sentences)"
-    ], index=0)
-
-elif current == "rewrite":
-    st.session_state.input_text = st.text_area(
-        "Paste your text here:",
-        value=st.session_state.input_text,
-        placeholder="Paste the text you want to rewrite...",
-        height=150,
-        key="rewrite_input",
-    )
-    extra_params["tone"] = st.selectbox("Optional: Keep or change tone", [
-        "Keep original tone", *TONES
-    ], index=0)
-
-else:
-    # ── Simple tools: Improve, Grammar ──
-    st.session_state.input_text = st.text_area(
-        "Paste your text here:",
-        value=st.session_state.input_text,
-        placeholder="Paste the text you want to improve or fix...",
-        height=150,
-        key="simple_input",
+    text = st.text_area(
+        label,
+        placeholder=placeholder,
+        height=height,
+        key=f"in_{tool_id}",
     )
 
-
-# ============================================================
-# GENERATE BUTTON
-# ============================================================
-
-st.divider()
-
-col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 2])
-
-with col_btn1:
-    generate_clicked = st.button(
-        "⚡ Generate",
-        use_container_width=True,
-        type="primary",
-    )
-
-with col_btn2:
-    if st.button("🗑️ Clear", use_container_width=True):
-        st.session_state.output_text = ""
-        st.session_state.input_text = ""
-        st.rerun()
-
-
-# ============================================================
-# GENERATE OUTPUT
-# ============================================================
-
-if generate_clicked:
-    # Validate input
-    has_input = False
-    tool_id = current
-
-    if current == "template":
-        tmpl = TEMPLATES.get(st.session_state.get("current_template"))
-        if tmpl:
-            # Check if required fields have values
-            field_values = extra_params.get("fields", {})
-            filled = [v for v in field_values.values() if v and v.strip()]
-            has_input = len(filled) > 0
-            # Build prompt from template
-            if has_input:
-                user_prompt = tmpl["prompt_builder"](field_values)
-                tool_id = tmpl["tool"]
-    else:
-        has_input = bool(st.session_state.input_text and st.session_state.input_text.strip())
-        user_prompt = st.session_state.input_text
-
-    if not has_input:
-        st.warning("Please enter some text or fill in the template fields.")
-    else:
-        st.session_state.is_generating = True
-        st.session_state.output_text = ""
-
-        # Create output container
-        output_container = st.empty()
-        output_container.markdown("*Generating...*")
-
-        full_text = ""
-        start_time = time.time()
-
-        try:
-            for chunk in run_tool_stream(tool_id, user_prompt, extra_params):
-                full_text += chunk
-                output_container.markdown(full_text)
-
-            elapsed = round(time.time() - start_time, 1)
-            st.session_state.output_text = full_text
-            st.session_state.is_generating = False
-
-            # Show generation time
-            st.caption(f"Generated in {elapsed}s")
-
-            # Update stats
-            stats = text_stats(full_text)
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Words", stats["words"])
-            col2.metric("Characters", stats["characters"])
-            col3.metric("Sentences", stats["sentences"])
-            col4.metric("Reading Time", stats["reading_time"])
-
-        except Exception as e:
-            st.error(f"Generation failed: {str(e)}")
-            st.session_state.is_generating = False
-
-
-# ============================================================
-# OUTPUT SECTION (if content exists)
-# ============================================================
-
-if st.session_state.output_text and not st.session_state.is_generating:
-    st.divider()
-    st.markdown("### Output")
-
-    # Display the output
-    st.markdown(st.session_state.output_text)
-
-    st.divider()
-
-    # ── Action Buttons ──
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    with col1:
-        if st.button("📋 Copy", use_container_width=True):
-            st.code(st.session_state.output_text, language=None)
-            st.success("Select the text above and press Ctrl+C to copy!")
-
-    with col2:
-        # Determine title for export
-        if current == "template":
-            tmpl = TEMPLATES.get(st.session_state.get("current_template"), {})
-            title = tmpl.get("name", "Document")
-        else:
-            title = TOOLS.get(current, {}).get("name", "Document")
-
-        now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        export_title = f"{title} - {now}"
-
-        md_content = export_markdown(
-            export_title,
-            st.session_state.output_text,
-            metadata={
-                "Tool": title,
-                "Generated": now,
-                "Words": str(text_stats(st.session_state.output_text)["words"]),
-            },
+    if tool_id == "write":
+        col_a, col_b, col_c = st.columns(3, gap="medium")
+        params["tone"] = col_a.selectbox("Tone", TONES, index=0)
+        params["length"] = col_b.selectbox("Length", LENGTHS, index=1)
+        params["audience"] = col_c.text_input("Audience",
+                                              placeholder="General")
+    elif tool_id == "tone":
+        params["tone"] = st.selectbox("Target tone", TONES, index=0)
+    elif tool_id == "translate":
+        params["language"] = st.selectbox("Translate to", LANGUAGES, index=1)
+    elif tool_id == "expand":
+        params["factor"] = st.selectbox("Expand by", ["2x", "3x", "5x"],
+                                        index=0)
+    elif tool_id == "shorten":
+        params["target"] = st.selectbox("Target length",
+                                        ["25%", "50%", "75%"], index=1)
+    elif tool_id == "summarize":
+        params["format"] = st.selectbox(
+            "Format",
+            ["Paragraph", "Bullet points", "TL;DR (1-2 sentences)"],
+            index=0,
+        )
+    elif tool_id == "rewrite":
+        params["tone"] = st.selectbox(
+            "Tone", ["Keep original tone", *TONES], index=0
         )
 
+    return text, params
+
+
+def build_request() -> tuple:
+    """Render the input area and return ``(tool_id, prompt, params, title)``.
+
+    ``prompt`` is empty when the user has not supplied enough input.
+    """
+    if st.session_state.view == "template":
+        template = TEMPLATES.get(st.session_state.template_id, {})
+        values = render_template_inputs(template)
+        filled = [v for v in values.values() if str(v).strip()]
+        builder = template.get("prompt_builder")
+
+        if len(filled) < 2 or builder is None:
+            return template.get("tool", "write"), "", {}, template.get(
+                "name", "Document")
+
+        # Templates emit a complete instruction; `raw` stops the tool from
+        # wrapping it inside a second layer of prompt scaffolding.
+        return (
+            template.get("tool", "write"),
+            builder(values),
+            {"raw": True},
+            template.get("name", "Document"),
+        )
+
+    tool_id = st.session_state.tool_id
+    text, params = render_tool_inputs(tool_id)
+    title = TOOLS.get(tool_id, {}).get("name", "Document")
+    return tool_id, text.strip(), params, title
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+
+def render_stats(text: str) -> None:
+    """Render the word / character / sentence / reading-time row."""
+    stats = text_stats(text)
+    cells = [
+        (stats["words"], "Words"),
+        (stats["characters"], "Characters"),
+        (stats["sentences"], "Sentences"),
+        (stats["reading_time"], "Read time"),
+    ]
+    body = "".join(
+        f'<div class="bw-stat"><div class="bw-stat__value">{value}</div>'
+        f'<div class="bw-stat__label">{label}</div></div>'
+        for value, label in cells
+    )
+    st.markdown(f'<div class="bw-stats">{body}</div>',
+                unsafe_allow_html=True)
+
+
+def output_label(text: str) -> None:
+    """Render the small uppercase label above the output panel."""
+    st.markdown(
+        f'<div class="bw-output-label">{html.escape(text)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def run_generation(tool_id: str, prompt: str, params: dict,
+                   title: str) -> None:
+    """Stream a result into the output panel and store it in state."""
+    output_label("Output")
+    started = time.perf_counter()
+
+    with st.container(key="bw_output"):
+        try:
+            result = st.write_stream(
+                run_tool_stream(tool_id, prompt, params)
+            )
+        except EngineError as error:
+            st.error(str(error))
+            return
+        except Exception as error:  # noqa: BLE001 - surface, do not crash
+            st.error(f"Generation failed: {error}")
+            return
+
+    text = result if isinstance(result, str) else "".join(result)
+    if not text.strip():
+        st.warning("The model returned an empty response. Try again.")
+        return
+
+    elapsed = time.perf_counter() - started
+    st.session_state.output = text
+    st.session_state.output_title = (
+        f"{title} — {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    )
+    st.session_state.output_meta = f"Generated in {elapsed:.1f}s"
+    st.session_state.show_source = False
+
+
+def render_saved_output() -> None:
+    """Re-render a result that was produced on an earlier run."""
+    output_label("Output")
+    with st.container(key="bw_output"):
+        st.markdown(st.session_state.output)
+
+
+def render_output_actions() -> None:
+    """Render the stats row and the export / save controls."""
+    text = st.session_state.output
+    title = st.session_state.output_title or "Document"
+
+    if st.session_state.output_meta:
+        st.markdown(
+            f'<div class="bw-meta">{html.escape(st.session_state.output_meta)}'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    render_stats(text)
+
+    col1, col2, col3, col4 = st.columns(4, gap="small")
+
+    with col1:
+        if st.button("📋  Copy text", use_container_width=True):
+            st.session_state.show_source = not st.session_state.show_source
+            st.rerun()
+
+    with col2:
         st.download_button(
-            label="📥 Markdown",
-            data=md_content,
-            file_name=f"{export_title.replace(' ', '_')}.md",
+            "⬇️  Markdown",
+            data=export_markdown(title, text, {
+                "Generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "Words": text_stats(text)["words"],
+            }),
+            file_name=safe_filename(title, "md"),
             mime="text/markdown",
             use_container_width=True,
         )
 
     with col3:
-        txt_content = export_text(export_title, st.session_state.output_text)
         st.download_button(
-            label="📥 Text",
-            data=txt_content,
-            file_name=f"{export_title.replace(' ', '_')}.txt",
+            "⬇️  Plain text",
+            data=export_text(title, text),
+            file_name=safe_filename(title, "txt"),
             mime="text/plain",
             use_container_width=True,
         )
 
     with col4:
-        if st.button("💾 Save", use_container_width=True):
-            doc_id = save_document(
-                title=export_title,
-                content=st.session_state.output_text,
-                tool=current,
-                extra_info=extra_params,
+        if st.button("💾  Save", use_container_width=True):
+            save_document(title, text, st.session_state.tool_id)
+            st.toast("Saved to your library.")
+            st.rerun()
+
+    if st.session_state.show_source:
+        st.caption("Select the block below, then copy.")
+        st.code(text, language="markdown")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """Compose the page."""
+    load_css()
+    init_state()
+    render_sidebar()
+    render_header()
+
+    tool_id, prompt, params, title = build_request()
+
+    st.write("")
+    col_generate, col_clear, _ = st.columns([1.1, 1, 3.4], gap="small")
+    generate_clicked = col_generate.button(
+        "⚡  Generate", type="primary", use_container_width=True
+    )
+    clear_clicked = col_clear.button("Clear", use_container_width=True)
+
+    if clear_clicked:
+        st.session_state.clear_inputs = True
+        reset_output()
+        st.rerun()
+
+    if generate_clicked:
+        if not prompt:
+            st.warning(
+                "Add some input first — fill in the box above "
+                "(or at least two template fields)."
             )
-            st.success("Document saved!")
-            time.sleep(0.5)
-            st.rerun()
+        else:
+            reset_output()
+            run_generation(tool_id, prompt, params, title)
 
-    with col5:
-        if st.button("🔄 Regenerate", use_container_width=True):
-            st.rerun()
+    elif st.session_state.output:
+        render_saved_output()
 
-    # ── Show original input for reference ──
-    if st.session_state.input_text:
-        with st.expander("📝 Original Input"):
-            st.text(st.session_state.input_text)
+    if st.session_state.output:
+        render_output_actions()
+    elif not generate_clicked:
+        output_label("Output")
+        st.markdown(
+            '<div class="bw-empty">Your generated text will appear here.'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+
+main()

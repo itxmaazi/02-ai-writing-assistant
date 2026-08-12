@@ -1,0 +1,34 @@
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+exclude = [".venv", "__pycache__", "data"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RET", "C4"]
+ignore = ["B008"]
+
+[tool.pylint.main]
+ignore-paths = ["^\\.venv/.*$", "^data/.*$"]
+
+[tool.pylint.format]
+max-line-length = 88
+
+[tool.pylint."messages control"]
+disable = [
+    "broad-exception-caught",
+    "duplicate-code",
+]
+
+[tool.pyright]
+include = ["*.py"]
+exclude = [".venv", "__pycache__", "data"]
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportAttributeAccessIssue = "none"
+reportOptionalMemberAccess = "none"
+venvPath = "."
+venv = ".venv"
+
+[tool.flake8]
+max-line-length = 88
+exclude = [".venv", "__pycache__", "data"]

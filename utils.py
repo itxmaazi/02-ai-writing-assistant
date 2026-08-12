@@ -1,51 +1,55 @@
-# utils.py
-# ============================================================
-# HELPER UTILITIES
-# ============================================================
+"""Text statistics, export helpers and document storage."""
+
+from __future__ import annotations
 
 import json
 import os
 import re
 from datetime import datetime
+
 from config_paths import DATA_DIR, DOCUMENTS_FILE
 
+WORDS_PER_MINUTE = 200
 
-# ============================================================
-# TEXT ANALYSIS
-# ============================================================
+_SENTENCE_SPLIT = re.compile(r"[.!?\n]+")
 
-def word_count(text):
-    """Counts words in text."""
-    if not text:
+# ---------------------------------------------------------------------------
+# Text analysis
+# ---------------------------------------------------------------------------
+
+
+def word_count(text: str) -> int:
+    """Count whitespace-separated words."""
+    return len(text.split()) if text else 0
+
+
+def char_count(text: str) -> int:
+    """Count characters."""
+    return len(text) if text else 0
+
+
+def sentence_count(text: str) -> int:
+    """Count sentences.
+
+    Counts non-empty fragments rather than subtracting one from the split
+    result, so a single unpunctuated sentence still counts as one.
+    """
+    if not text or not text.strip():
         return 0
-    return len(text.split())
+    parts = [p for p in _SENTENCE_SPLIT.split(text) if p.strip()]
+    return len(parts)
 
 
-def char_count(text):
-    """Counts characters in text."""
-    if not text:
-        return 0
-    return len(text)
-
-
-def sentence_count(text):
-    """Counts sentences in text."""
-    if not text:
-        return 0
-    return len(re.split(r'[.!?]+', text.strip())) - 1
-
-
-def reading_time(text):
-    """Estimates reading time (average 200 words per minute)."""
-    words = word_count(text)
-    minutes = words / 200
+def reading_time(text: str) -> str:
+    """Estimate reading time at ~200 words per minute."""
+    minutes = word_count(text) / WORDS_PER_MINUTE
     if minutes < 1:
         return "< 1 min"
-    return f"{int(minutes)} min"
+    return f"{round(minutes)} min"
 
 
-def text_stats(text):
-    """Returns a complete stats dict for any text."""
+def text_stats(text: str) -> dict:
+    """Return words, characters, sentences and reading time for ``text``."""
     return {
         "words": word_count(text),
         "characters": char_count(text),
@@ -54,89 +58,83 @@ def text_stats(text):
     }
 
 
-# ============================================================
-# EXPORT
-# ============================================================
+# ---------------------------------------------------------------------------
+# Export
+# ---------------------------------------------------------------------------
 
-def export_markdown(title, content, metadata=None):
-    """
-    Exports content as a Markdown string with metadata.
 
-    Args:
-        title: document title
-        content: the main text
-        metadata: optional dict with tool, date, etc.
-
-    Returns:
-        str: formatted Markdown content
-    """
-    lines = []
-    lines.append(f"# {title}\n")
+def export_markdown(title: str, content: str,
+                    metadata: dict | None = None) -> str:
+    """Render ``content`` as a Markdown document with optional front matter."""
+    lines = [f"# {title}", ""]
 
     if metadata:
         lines.append("---")
-        for key, value in metadata.items():
-            lines.append(f"- **{key}:** {value}")
-        lines.append("---\n")
+        lines.extend(f"- **{key}:** {value}" for key, value in metadata.items())
+        lines.extend(["---", ""])
 
     lines.append(content)
     return "\n".join(lines)
 
 
-def export_text(title, content):
-    """Exports content as plain text."""
+def export_text(title: str, content: str) -> str:
+    """Render ``content`` as plain text with an underlined title."""
     return f"{title}\n{'=' * len(title)}\n\n{content}"
 
 
-# ============================================================
-# DOCUMENT STORAGE
-# ============================================================
+def safe_filename(name: str, extension: str) -> str:
+    """Turn a document title into a filesystem-safe file name."""
+    cleaned = re.sub(r"[^\w\s-]", "", name).strip()
+    cleaned = re.sub(r"[\s_-]+", "_", cleaned) or "document"
+    return f"{cleaned[:80]}.{extension.lstrip('.')}"
 
-def load_documents():
-    """Loads saved documents from disk."""
+
+# ---------------------------------------------------------------------------
+# Document storage
+# ---------------------------------------------------------------------------
+
+
+def _write_documents(docs: list[dict]) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(DOCUMENTS_FILE, "w", encoding="utf-8") as handle:
+        json.dump(docs, handle, indent=2, ensure_ascii=False)
+
+
+def load_documents() -> list[dict]:
+    """Load saved documents, returning an empty list if none exist."""
     if not os.path.exists(DOCUMENTS_FILE):
         return []
     try:
-        with open(DOCUMENTS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
+        with open(DOCUMENTS_FILE, encoding="utf-8") as handle:
+            docs = json.load(handle)
+    except (json.JSONDecodeError, OSError):
         return []
+    return docs if isinstance(docs, list) else []
 
 
-def save_document(title, content, tool, extra_info=None):
-    """
-    Saves a document to disk.
-
-    Returns:
-        str: the document ID
-    """
+def save_document(title: str, content: str, tool: str,
+                  extra_info: dict | None = None) -> str:
+    """Persist a document and return its generated id."""
     docs = load_documents()
+    stamp = datetime.now()
 
-    doc_id = f"doc_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     doc = {
-        "id": doc_id,
+        "id": f"doc_{stamp.strftime('%Y%m%d_%H%M%S_%f')}",
         "title": title,
         "content": content,
         "tool": tool,
-        "created": datetime.now().isoformat(),
+        "created": stamp.isoformat(timespec="seconds"),
         "stats": text_stats(content),
     }
-
     if extra_info:
         doc["extra"] = extra_info
 
     docs.append(doc)
-
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(DOCUMENTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(docs, f, indent=2, ensure_ascii=False)
-
-    return doc_id
+    _write_documents(docs)
+    return doc["id"]
 
 
-def delete_document(doc_id):
-    """Deletes a document by ID."""
-    docs = load_documents()
-    docs = [d for d in docs if d["id"] != doc_id]
-    with open(DOCUMENTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(docs, f, indent=2, ensure_ascii=False)
+def delete_document(doc_id: str) -> None:
+    """Delete a document by id."""
+    docs = [doc for doc in load_documents() if doc.get("id") != doc_id]
+    _write_documents(docs)
